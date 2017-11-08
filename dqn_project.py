@@ -4,6 +4,7 @@ import tensorflow as tf
 import numpy as np
 from itertools import count
 from replay_memory import ReplayMemory, Transition
+import tensorflow.contrib.layers as layers
 import env_wrappers
 import random
 import os
@@ -47,11 +48,19 @@ class DQN(object):
         # memory
         self.replay_memory = ReplayMemory(100000)
         # Perhaps you want to have some samples in the memory before starting to train?
-        self.min_replay_size = 10000
+        self.min_replay_size = 512#10000
+
+        self.replace_target_iter = 300
+        self.curr_target_iter = 0
+        self.lr = 0.01
 
         # define yours training operations here...
-        self.observation_input = tf.placeholder(tf.float32, shape=[None] + list(self.env.observation_space.shape))
-        q_values = self.build_model(self.observation_input)
+        self.observation_ph = tf.placeholder(tf.float32, shape=[None] + list(self.env.observation_space.shape))
+        self.action_ph = tf.placeholder(tf.int32, shape=[None,])
+        self.reward_ph = tf.placeholder(tf.float32, shape=[None,])
+        self.next_observation_ph = tf.placeholder(tf.float32, shape=[None] + list(self.env.observation_space.shape))
+
+        q_values = self.build_model(self.observation_ph)
 
         # define your update operations here...
 
@@ -61,7 +70,7 @@ class DQN(object):
         self.saver = tf.train.Saver(tf.trainable_variables())
         self.sess.run(tf.global_variables_initializer())
 
-    def build_model(self, observation_input, scope='train'):
+    def build_model(self, observation_ph, scope='train'):
         """
         TODO: Define the tensorflow model
 
@@ -69,8 +78,31 @@ class DQN(object):
 
         Currently returns an op that gives all zeros.
         """
-        with tf.variable_scope(scope):
-            return tf.Variable(tf.zeros((self.env.action_space.n,)))
+        # eval net
+        with tf.variable_scope('eval_net'):
+            x = layers.fully_connected(observation_ph, 30, activation_fn=tf.nn.relu)
+            self.q_eval_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
+
+        # target net
+        with tf.variable_scope('target_net'):
+            x = layers.fully_connected(self.next_observation_ph, 30, activation_fn=tf.nn.relu)
+            self.q_target_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
+
+        with tf.variable_scope('q_target'):
+            q_target = self.reward_ph + self.gamma * tf.reduce_max(self.q_target_net, axis=1, name='Qmax_s_')    # shape=(None, )
+            self.q_target = tf.stop_gradient(q_target)
+        with tf.variable_scope('q_eval'):
+            a_indices = tf.stack([tf.range(tf.shape(self.action_ph)[0], dtype=tf.int32), self.action_ph], axis=1)
+            self.q_eval_wrt_a = tf.gather_nd(params=self.q_eval_net, indices=a_indices)    # shape=(None, )
+        with tf.variable_scope('loss'):
+            self.loss = tf.reduce_mean(tf.squared_difference(self.q_target, self.q_eval_wrt_a, name='TD_error'))
+        with tf.variable_scope('train'):
+            self.train_op = tf.train.RMSPropOptimizer(self.lr).minimize(self.loss)
+
+        t_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_net')
+        e_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='eval_net')
+        with tf.variable_scope('soft_replacement'):
+            self.target_replace_op = [tf.assign(t, e) for t, e in zip(t_params, e_params)]
 
     def select_action(self, obs, evaluation_mode=False):
         """
@@ -82,14 +114,42 @@ class DQN(object):
 
         Currently returns a random action.
         """
-        return env.action_space.sample()
+        if self.num_episodes % self.eps_decay and self.eps_start > self.eps_end:
+            self.eps_start -= 0.05
+        obs = obs.reshape((-1, 8))
+        if np.random.uniform() > self.eps_start or evaluation_mode:
+            actions_value = self.sess.run(self.q_eval_net, feed_dict={self.observation_ph: obs})
+            #print(np.argmax(actions_value))
+            return np.argmax(actions_value)
+        else:
+            return env.action_space.sample()
 
     def update(self):
         """
         TODO: Implement the functionality to update the network according to the
         Q-learning rule
         """
-        raise NotImplementedError
+        # Replace Target Network
+        if self.curr_target_iter % self.replace_target_iter == 0:
+            self.sess.run(self.target_replace_op)
+
+        self.curr_target_iter += 1
+
+        # Experience replay
+        mem_pool = self.replay_memory.sample(self.batch_size)
+        obs = np.reshape([_.state for _ in mem_pool], (-1, 8))
+        next_obs = np.reshape([_.next_state for _ in mem_pool], (-1, 8))
+        acts = [_.action for _ in mem_pool]
+        rewards = [_.reward for _ in mem_pool]
+
+        self.sess.run([self.train_op, self.loss], 
+            feed_dict={self.observation_ph: obs, 
+            self.action_ph: acts, 
+            self.reward_ph: rewards,
+            self.next_observation_ph: next_obs
+        })
+
+        #raise NotImplementedError
 
     def train(self):
         """
@@ -106,6 +166,10 @@ class DQN(object):
             action = self.select_action(obs, evaluation_mode=False)
             next_obs, reward, done, info = env.step(action)
             self.num_steps += 1
+            self.replay_memory.push(obs, action, next_obs, reward, done)
+
+            if self.num_steps >= self.min_replay_size:
+                self.update()
         self.num_episodes += 1
 
     def eval(self, save_snapshot=True):
