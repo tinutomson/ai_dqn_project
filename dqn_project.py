@@ -60,15 +60,18 @@ class DQN(object):
         self.reward_ph = tf.placeholder(tf.float32, shape=[None,])
         self.next_observation_ph = tf.placeholder(tf.float32, shape=[None] + list(self.env.observation_space.shape))
 
-        q_values = self.build_model(self.observation_ph)
-
         # define your update operations here...
 
         self.num_episodes = 0
         self.num_steps = 0
 
+        q_values = self.build_model(self.observation_ph)
+
         self.saver = tf.train.Saver(tf.trainable_variables())
         self.sess.run(tf.global_variables_initializer())
+
+        self.rand_count = 0
+        self.greed_count = 0
 
     def build_model(self, observation_ph, scope='train'):
         """
@@ -80,12 +83,14 @@ class DQN(object):
         """
         # eval net
         with tf.variable_scope('eval_net'):
-            x = layers.fully_connected(observation_ph, 30, activation_fn=tf.nn.relu)
+            x = layers.fully_connected(observation_ph, 7, activation_fn=tf.nn.relu)
+            x = layers.fully_connected(x, 5, activation_fn=tf.nn.relu)
             self.q_eval_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
 
         # target net
         with tf.variable_scope('target_net'):
-            x = layers.fully_connected(self.next_observation_ph, 30, activation_fn=tf.nn.relu)
+            x = layers.fully_connected(self.next_observation_ph, 7, activation_fn=tf.nn.relu)
+            x = layers.fully_connected(x, 5, activation_fn=tf.nn.relu)
             self.q_target_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
 
         with tf.variable_scope('q_target'):
@@ -97,7 +102,7 @@ class DQN(object):
         with tf.variable_scope('loss'):
             self.loss = tf.reduce_mean(tf.squared_difference(self.q_target, self.q_eval_wrt_a, name='TD_error'))
         with tf.variable_scope('train'):
-            self.train_op = tf.train.RMSPropOptimizer(self.lr).minimize(self.loss)
+            self.train_op = tf.train.AdamOptimizer(self.lr*self.num_episodes).minimize(self.loss)
 
         t_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_net')
         e_params = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='eval_net')
@@ -114,15 +119,20 @@ class DQN(object):
 
         Currently returns a random action.
         """
-        if self.num_episodes % self.eps_decay and self.eps_start > self.eps_end:
-            self.eps_start -= 0.05
+            #print('self.num_steps: {}'.format(self.num_steps))
+            #print('self.num_episodes: {}'.format(self.num_episodes))
+            #print('self.curr_target_iter: {}'.format(self.curr_target_iter))
+            #print('self.eps_start: {}'.format(self.eps_start))
         obs = obs.reshape((-1, 8))
-        if np.random.uniform() > self.eps_start or evaluation_mode:
+        if np.random.uniform() > self.eps_start or evaluation_mode is True:
             actions_value = self.sess.run(self.q_eval_net, feed_dict={self.observation_ph: obs})
+            self.greed_count += 1
             #print(np.argmax(actions_value))
             return np.argmax(actions_value)
         else:
-            return env.action_space.sample()
+            self.rand_count += 1
+            return self.env.action_space.sample()
+            
 
     def update(self):
         """
@@ -162,6 +172,8 @@ class DQN(object):
         """
         done = False
         obs = env.reset()
+        self.rand_count = 0
+        self.greed_count = 0
         while not done:
             action = self.select_action(obs, evaluation_mode=False)
             next_obs, reward, done, info = env.step(action)
@@ -170,7 +182,13 @@ class DQN(object):
 
             if self.num_steps >= self.min_replay_size:
                 self.update()
+
         self.num_episodes += 1
+
+        if self.num_episodes % 10 == 0 and self.eps_start > self.eps_end:
+            self.eps_start -= 0.005
+            print('self.rand_count: {}'.format(self.rand_count))
+            print('self.greed_count: {}'.format(self.greed_count))
 
     def eval(self, save_snapshot=True):
         """
@@ -186,6 +204,7 @@ class DQN(object):
             obs, reward, done, info = env.step(action)
             total_reward += reward
         print ("Evaluation episode: ", total_reward)
+
         if save_snapshot:
             print ("Saving state with Saver")
             self.saver.save(self.sess, 'models/dqn-model', global_step=self.num_episodes)
