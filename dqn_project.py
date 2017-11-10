@@ -83,14 +83,14 @@ class DQN(object):
         """
         # eval net
         with tf.variable_scope('eval_net'):
-            x = layers.fully_connected(observation_ph, 5, activation_fn=tf.nn.softmax)
-            x = layers.fully_connected(x, 6, activation_fn=tf.nn.softmax)
+            x = layers.fully_connected(observation_ph, 7, activation_fn=tf.nn.softmax)
+            #x = layers.fully_connected(x, 5, activation_fn=tf.nn.softmax)
             self.q_eval_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
 
         # target net
         with tf.variable_scope('target_net'):
-            x = layers.fully_connected(self.next_observation_ph, 5, activation_fn=tf.nn.softmax)
-            x = layers.fully_connected(x, 6, activation_fn=tf.nn.softmax)
+            x = layers.fully_connected(self.next_observation_ph, 7, activation_fn=tf.nn.softmax)
+            #x = layers.fully_connected(x, 5, activation_fn=tf.nn.softmax)
             self.q_target_net = layers.fully_connected(x, self.env.action_space.n, activation_fn=None)
 
         with tf.variable_scope('q_target'):
@@ -215,10 +215,6 @@ def train(dqn):
         # every 10 episodes run an evaluation episode
         if i % 10 == 0:
             reward = dqn.eval()
-            if reward > 0:
-                self.eps_start = self.eps_end
-
-
 
 def eval(dqn):
     """
